@@ -225,6 +225,7 @@ section.card { background: var(--panel); border: 1px solid var(--line); border-r
             <button data-i="dup" aria-pressed="false">복제</button>
             <button data-i="blend" aria-pressed="false">블렌딩</button>
             <button data-i="flow" aria-pressed="true">모션 보간</button>
+            <button data-i="ai" aria-pressed="false">AI 보간</button>
           </div>
           <p class="hint" id="slowHint" hidden></p>
         </div>
@@ -441,7 +442,8 @@ function renderSlow() {
   $("keepAudio").disabled = on;
   if (!on) return;
   const outFps = S.interp === "dup" ? S.fps / S.slow : S.fps;
-  const desc = { dup: "같은 프레임을 늘려 보여줍니다", blend: "앞뒤 프레임을 섞어 중간 프레임을 만듭니다 (빠른 움직임엔 잔상)", flow: "움직임을 추정해 중간 프레임을 그립니다 (가장 부드럽고 가장 느림)" }[S.interp];
+  const desc = { dup: "같은 프레임을 늘려 보여줍니다", blend: "앞뒤 프레임을 섞어 중간 프레임을 만듭니다 (빠른 움직임엔 잔상)", flow: "움직임을 추정해 중간 프레임을 그립니다 (빠른 움직임에서 깨질 수 있음)",
+    ai: `AI(RIFE)가 중간 프레임을 그립니다. 가장 깨끗하지만 가장 느립니다. 처음 한 번 모델 약 23MB를 받고, 이 구간이면 AI 계산 ${Math.round((S.tout - S.tin) * S.fps * (S.slow - 1))}회가 필요합니다. 짧은 구간부터 써 보세요` }[S.interp];
   $("slowHint").textContent = `원본 ${S.fps.toFixed(0)}fps → 출력 ${outFps.toFixed(0)}fps, 길이 ${((S.tout - S.tin) * S.slow).toFixed(2)}초. ${desc}. 소리는 빠집니다.`
     + (S.fps >= 50 && S.slow === 2 ? " 원본이 60fps라 '복제'만으로도 30fps로 부드럽습니다." : "");
 }
@@ -516,7 +518,21 @@ void main(){
   } else o = vec4(bl, 1);
 }`;
 
-function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen, onNote }) {
+// ---------- AI interpolation (RIFE v4.26, MIT, run by onnxruntime-web on WebGPU or CPU) ----------
+let rife = null;   // { ort, session, backend }
+async function loadRife(onStatus) {
+  if (rife) return rife;
+  onStatus("AI 모델 불러오는 중… (처음 한 번 약 23MB)");
+  const ort = await import("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.bundle.min.mjs");
+  let session = null, backend = "GPU";
+  if (navigator.gpu) {
+    try { session = await ort.InferenceSession.create("rife426.onnx", { executionProviders: ["webgpu"] }); } catch { session = null; }
+  }
+  if (!session) { backend = "CPU"; session = await ort.InferenceSession.create("rife426.onnx", { executionProviders: ["wasm"] }); }
+  return (rife = { ort, session, backend });
+}
+
+function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen, onNote, ai }) {
   const src = new OffscreenCanvas(srcW, srcH), sctx = src.getContext("2d");
   const cv = new OffscreenCanvas(outW, outH);
   const gl = cv.getContext("webgl2", { premultipliedAlpha: false, preserveDrawingBuffer: true, antialias: false });
@@ -600,7 +616,56 @@ function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen
     return new MB.VideoSample(cv, { timestamp, duration });
   }
 
+  // RIFE wants CHW float input padded to a multiple of 64; frames are read back from the GL textures (bottom-up rows)
+  const Hp = Math.ceil(outH / 64) * 64, Wp = Math.ceil(outW / 64) * 64, plane = Hp * Wp;
+  const rgba = new Uint8Array(outW * outH * 4);
+  const aiCanvas = mode === "ai" ? new OffscreenCanvas(outW, outH) : null;
+  const aiCtx = aiCanvas?.getContext("2d");
+  const aiImg = aiCtx?.createImageData(outW, outH);
+  const tensors = [null, null];
+  function toTensor(fr) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fr.fb);
+    gl.readPixels(0, 0, outW, outH, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    const d = new Float32Array(3 * plane);
+    for (let y = 0; y < Hp; y++) {
+      const sy = outH - 1 - Math.min(y, outH - 1);            // flip to top-down, replicate the bottom edge into padding
+      for (let x = 0; x < Wp; x++) {
+        const si = (sy * outW + Math.min(x, outW - 1)) * 4, di = y * Wp + x;
+        d[di] = rgba[si] / 255; d[plane + di] = rgba[si + 1] / 255; d[2 * plane + di] = rgba[si + 2] / 255;
+      }
+    }
+    return new ai.ort.Tensor("float32", d, [1, 3, Hp, Wp]);
+  }
+  async function aiEmit(a, b, t, timestamp, duration) {
+    const r = await ai.session.run({ img0: a, img1: b, t: new ai.ort.Tensor("float32", new Float32Array([t]), [1, 1, 1, 1]) });
+    const o = r.out.data, px = aiImg.data;
+    for (let y = 0; y < outH; y++) for (let x = 0; x < outW; x++) {
+      const si = y * Wp + x, di = (y * outW + x) * 4;
+      px[di] = o[si] * 255; px[di + 1] = o[plane + si] * 255; px[di + 2] = o[2 * plane + si] * 255; px[di + 3] = 255;
+    }
+    r.out.dispose?.();
+    aiCtx.putImageData(aiImg, 0, 0);
+    return new MB.VideoSample(aiCanvas, { timestamp, duration });
+  }
+
   let cur = 0, t0 = null, prevTs = null;
+  if (mode === "ai") return async (sample) => {
+    const ts = sample.timestamp, dur = sample.duration || 1 / 30;
+    if (t0 === null) t0 = ts;
+    const ci = cur, f = frames[cur], g = frames[cur ^ 1]; cur ^= 1;
+    renderFrame(sample, f);
+    tensors[ci] = toTensor(f);
+    const T = (x) => t0 + (x - t0) * slow;
+    const out = [];
+    if (prevTs !== null) {
+      const dt = ts - prevTs;
+      out.push(emit(g, g, 0, false, T(prevTs), dt));
+      for (let k = 1; k < slow; k++) out.push(await aiEmit(tensors[ci ^ 1], tensors[ci], k / slow, T(prevTs) + k * dt, dt));
+    }
+    if (ts - t0 + dur >= spanLen - dur * 0.5) out.push(emit(f, f, 0, false, T(ts), dur * slow));
+    prevTs = ts;
+    return out.length ? out : null;
+  };
   return (sample) => {
     const ts = sample.timestamp, dur = sample.duration || 1 / 30;
     if (t0 === null) t0 = ts;
@@ -648,7 +713,9 @@ $("go").onclick = async () => {
     if (crop) video.crop = crop;
     const notes = [];
     if (S.enh > 0 || S.up2 || S.slow > 1) {
-      video.process = makeFrameProcessor({ srcW: baseW, srcH: baseH, outW, outH, enh: S.enh, slow: S.slow, interp: S.interp,
+      const ai = S.slow > 1 && S.interp === "ai" ? await loadRife(setStatus) : null;
+      if (ai) notes.push(`AI 계산: ${ai.backend}`);
+      video.process = makeFrameProcessor({ ai, srcW: baseW, srcH: baseH, outW, outH, enh: S.enh, slow: S.slow, interp: S.interp,
         spanLen: S.tout - S.tin, onNote: (m) => notes.push(m) });
       video.processedWidth = outW; video.processedHeight = outH;
     }
