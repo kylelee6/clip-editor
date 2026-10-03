@@ -1,30 +1,6 @@
-<!doctype html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#121417">
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icon-192.png">
-<!-- sw.js makes the app work offline and adds the cross-origin isolation headers (multi-threaded AI on CPU) that
-     GitHub Pages can't send; the first visit reloads once so the page comes back under the worker -->
-<script>
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("sw.js").then(() => {
-    let tried = false;
-    try { tried = sessionStorage.getItem("swReload") === "1"; } catch {}
-    if (self.crossOriginIsolated) { try { sessionStorage.removeItem("swReload"); } catch {} return; }
-    if (tried) return;
-    const reload = () => { try { sessionStorage.setItem("swReload", "1"); } catch {} location.reload(); };
-    if (navigator.serviceWorker.controller) reload();
-    else navigator.serviceWorker.addEventListener("controllerchange", reload);
-  }).catch(() => {});
-}
-</script>
-<style>[hidden]{display:none!important} body{margin:0} *{box-sizing:border-box}</style>
 <title>In·Out 클립 편집기</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" crossorigin="anonymous" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
 /* Layout: one-column editing bay — monitor on top, timeline strip, then export rack. Dark suite look, tape-yellow In/Out marks. */
 :root {
@@ -127,8 +103,6 @@ section.card { background: var(--panel); border: 1px solid var(--line); border-r
 }
 @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
 </style>
-</head>
-<body>
 
 <div class="wrap">
   <header>
@@ -231,25 +205,6 @@ section.card { background: var(--panel); border: 1px solid var(--line); border-r
           <p class="hint">선명도(언샤프 마스크)와 약간의 대비·채도 보정을 인코딩 직전에 적용합니다. AI 복원은 아닙니다.</p>
         </div>
 
-        <div class="optrow">
-          <span class="label">슬로우 모션</span>
-          <div class="seg q" id="spdSeg">
-            <button data-s="1" aria-pressed="true">1× 원래 속도</button>
-            <button data-s="2" aria-pressed="false">0.5×</button>
-            <button data-s="4" aria-pressed="false">0.25×</button>
-          </div>
-          <div class="seg" id="itpSeg" hidden>
-            <button data-i="dup" aria-pressed="false">복제</button>
-            <button data-i="blend" aria-pressed="false">블렌딩</button>
-            <button data-i="flow" aria-pressed="true">모션 보간</button>
-            <button data-i="ai" aria-pressed="false">AI 보간</button>
-          </div>
-          <label class="switch" id="aiFastRow" hidden><input type="checkbox" id="aiFast" checked> AI 고속 모드 (움직임을 절반 해상도로 계산, 약 3배 빠름)</label>
-          <p class="hint" id="slowHint" hidden></p>
-          <p class="hint" id="aiDev" hidden></p>
-          <div class="switch" id="aiPrepRow" hidden><button id="aiPrep" class="ghost">오프라인용 AI 미리 받기</button> <span class="hint" id="aiPrepMsg"></span></div>
-        </div>
-
         <label class="switch"><input type="checkbox" id="keepAudio" checked> 소리 포함</label>
       </section>
 
@@ -281,7 +236,7 @@ const S = {
   file: null, dur: 0, fps: 30, W: 0, H: 0,
   tin: 0, tout: 0,
   ar: "off", roi: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 },  // normalized to display frame
-  q: "vhigh", enh: 0, up2: false, slow: 1, interp: "flow", aiFast: true,
+  q: "vhigh", enh: 0, up2: false,
   conv: null, outBlob: null, outName: "", outUrl: null, srcUrl: null, loop: false,
 };
 
@@ -338,7 +293,7 @@ const snap = (t) => Math.min(S.dur, Math.max(0, Math.round(t * S.fps) / S.fps));
 $("play").onclick = () => { S.loop = false; vid.paused ? vid.play() : vid.pause(); };
 $("prevF").onclick = () => { vid.pause(); vid.currentTime = snap(vid.currentTime - frame()); };
 $("nextF").onclick = () => { vid.pause(); vid.currentTime = snap(vid.currentTime + frame()); };
-$("loopSel").onclick = () => { S.loop = true; vid.playbackRate = 1 / S.slow; vid.currentTime = S.tin; vid.play(); };
+$("loopSel").onclick = () => { S.loop = true; vid.currentTime = S.tin; vid.play(); };
 vid.onplay = vid.onpause = () => { $("play").textContent = vid.paused ? "▶" : "❚❚"; };
 function tick() {
   if (S.loop && !vid.paused && vid.currentTime >= S.tout) vid.currentTime = S.tin;
@@ -380,7 +335,6 @@ function renderTimes() {
   $("sel").style.left = p(S.tin); $("sel").style.width = `calc(${p(S.tout)} - ${p(S.tin)})`;
   $("inTc").textContent = fmt(S.tin); $("outTc").textContent = fmt(S.tout);
   $("durTc").textContent = (S.tout - S.tin).toFixed(2) + "초";
-  if (S.slow > 1) renderSlow();
 }
 function renderHead() {
   if (!S.dur) return;
@@ -454,289 +408,50 @@ function segPick(id, attr, fn) {
 segPick("qSeg", "q", (v) => S.q = v);
 segPick("enhSeg", "e", (v) => S.enh = parseFloat(v));
 $("up2").onchange = (e) => S.up2 = e.target.checked;
-segPick("spdSeg", "s", (v) => { S.slow = parseInt(v); vid.playbackRate = 1 / S.slow; renderSlow(); });
-segPick("itpSeg", "i", (v) => { S.interp = v; renderSlow(); });
-$("aiFast").onchange = (e) => { S.aiFast = e.target.checked; renderSlow(); };
-$("aiPrep").onclick = async () => {
-  const msg = (t) => $("aiPrepMsg").textContent = t;
-  $("aiPrep").disabled = true;
-  try { await loadRife(S.aiFast, msg); msg("준비 완료. 이제 인터넷 없이 AI 보간을 쓸 수 있습니다."); }
-  catch (e) { msg("받지 못했습니다. 인터넷 연결을 확인하세요. (" + (e?.message || e) + ")"); }
-  finally { $("aiPrep").disabled = false; }
-};
-// Which processor will run the AI, and if not the GPU, why not
-let gpuProbe = null;
-async function probeGpu() {
-  if (!navigator.gpu) return { ok: false, why: "이 브라우저에서 WebGPU를 쓸 수 없음 (Android 12+, 크롬 121+ 필요)" };
-  try {
-    const ad = await navigator.gpu.requestAdapter();
-    if (!ad) return { ok: false, why: "크롬이 이 기기의 GPU를 WebGPU용으로 허용하지 않음 (드라이버 차단 목록)" };
-    const info = ad.info || {};
-    return { ok: true, name: [info.vendor, info.architecture].filter(Boolean).join(" ") || "GPU" };
-  } catch (e) { return { ok: false, why: "GPU 확인 중 오류: " + e.message }; }
-}
-probeGpu().then((r) => { gpuProbe = r; renderSlow(); });
-const cpuDesc = () => `CPU ${self.crossOriginIsolated ? "멀티코어" : "단일 코어"} (${navigator.hardwareConcurrency || "?"}코어 기기)`;
-function renderSlow() {
-  const on = S.slow > 1;
-  $("itpSeg").hidden = $("slowHint").hidden = !on;
-  $("aiFastRow").hidden = $("aiDev").hidden = $("aiPrepRow").hidden = !(on && S.interp === "ai");
-  if (gpuProbe) $("aiDev").textContent = gpuProbe.ok ? `AI 계산 장치: GPU (${gpuProbe.name})` : `AI 계산 장치: ${cpuDesc()} · GPU 불가 이유: ${gpuProbe.why}`;
-  $("keepAudio").disabled = on;
-  if (!on) return;
-  const outFps = S.interp === "dup" ? S.fps / S.slow : S.fps;
-  const desc = { dup: "같은 프레임을 늘려 보여줍니다", blend: "앞뒤 프레임을 섞어 중간 프레임을 만듭니다 (빠른 움직임엔 잔상)", flow: "움직임을 추정해 중간 프레임을 그립니다 (빠른 움직임에서 깨질 수 있음)",
-    ai: `AI(RIFE)가 중간 프레임을 그립니다. 가장 깨끗하지만 가장 느립니다. 처음 한 번 모델 약 23MB를 받고, 이 구간이면 AI 계산 ${Math.round((S.tout - S.tin) * S.fps * (S.slow - 1))}회가 필요합니다. 짧은 구간부터 써 보세요` }[S.interp];
-  $("slowHint").textContent = `원본 ${S.fps.toFixed(0)}fps → 출력 ${outFps.toFixed(0)}fps, 길이 ${((S.tout - S.tin) * S.slow).toFixed(2)}초. ${desc}. 소리는 빠집니다.`
-    + (S.fps >= 50 && S.slow === 2 ? " 원본이 60fps라 '복제'만으로도 30fps로 부드럽습니다." : "");
-}
 
-function renderAll() { renderTimes(); renderRoi(); renderHead(); renderSlow(); }
+function renderAll() { renderTimes(); renderRoi(); renderHead(); }
 
-// ---------- frame processor: enhancement + slow-motion interpolation (WebGL2) ----------
-// Each decoded frame is rendered (cropped, optionally sharpened/upscaled) into a texture. For slow motion with
-// factor N, the span between the previous and current frame is stretched N times and filled with N output frames:
-// 'dup' holds the frame, 'blend' cross-fades, 'flow' warps both frames along a block-matched optical flow.
-const VS = `#version 300 es
-in vec2 p; out vec2 uv;
-void main(){ uv = p*.5+.5; gl_Position = vec4(p,0,1); }`;
-const FS_ENH = `#version 300 es
-precision highp float; in vec2 uv; out vec4 o;
-uniform sampler2D t; uniform vec2 px; uniform float k;
-void main(){
-  vec3 c = texture(t, uv).rgb;
-  vec3 b = c*4.0;
-  b += (texture(t, uv+vec2(px.x,0.)).rgb + texture(t, uv-vec2(px.x,0.)).rgb + texture(t, uv+vec2(0.,px.y)).rgb + texture(t, uv-vec2(0.,px.y)).rgb)*2.0;
-  b += texture(t, uv+px).rgb + texture(t, uv-px).rgb + texture(t, uv+vec2(px.x,-px.y)).rgb + texture(t, uv+vec2(-px.x,px.y)).rgb;
-  b /= 16.0;
-  vec3 s = c + (c-b)*k;
-  float l = dot(s, vec3(.299,.587,.114));
-  s = mix(vec3(l), s, 1.0 + .06*k);
-  s = (s-.5)*(1.0 + .04*k) + .5;
-  o = vec4(clamp(s,0.,1.), 1.);
-}`;
-// bilateral block matching at the intermediate time t: find motion d such that the patch at uv - t*d in A matches
-// the patch at uv + (1-t)*d in B. Estimating motion where the new frame is drawn (rather than where things were in A)
-// keeps small fast objects from being lost to the background. 5x5 luminance patch, search +-R texels at mip `lod`.
-const FS_MATCH = `#version 300 es
-precision highp float; in vec2 uv; out vec4 o;
-uniform sampler2D A, B, F0; uniform float lod, t; uniform vec2 st; uniform int R; uniform bool hasInit;
-float L(sampler2D s, vec2 u){ return dot(textureLod(s, u, lod).rgb, vec3(.299,.587,.114)); }
-void main(){
-  vec2 base = hasInit ? texture(F0, uv).xy : vec2(0);
-  float best = 1e9; vec2 bd = base;
-  for (int dy=-6; dy<=6; dy++) for (int dx=-6; dx<=6; dx++) {
-    if (abs(dx) > R || abs(dy) > R) continue;
-    vec2 d = base + vec2(dx,dy)*st;
-    vec2 ua = uv - t*d, ub = uv + (1.-t)*d;
-    float c = 0.;
-    for (int y=-2; y<=2; y++) for (int x=-2; x<=2; x++) c += abs(L(A, ua + vec2(x,y)*st) - L(B, ub + vec2(x,y)*st));
-    c += 0.004*float(dx*dx + dy*dy);
-    if (c < best) { best = c; bd = d; }
-  }
-  o = vec4(bd, 0, 1);
-}`;
-const FS_SMOOTH = `#version 300 es
-precision highp float; in vec2 uv; out vec4 o;
-uniform sampler2D F; uniform vec2 tx;
-void main(){
-  vec2 s = vec2(0); float w = 0.;
-  for (int y=-1; y<=1; y++) for (int x=-1; x<=1; x++) {
-    float ww = (x==0 ? 2. : 1.)*(y==0 ? 2. : 1.);
-    s += texture(F, uv + vec2(x,y)*tx).xy*ww; w += ww;
-  }
-  o = vec4(s/w, 0, 1);
-}`;
-const FS_OUT = `#version 300 es
-precision highp float; in vec2 uv; out vec4 o;
-uniform sampler2D A, B, F; uniform float t; uniform bool useFlow;
-void main(){
-  vec3 ca = textureLod(A, uv, 0.).rgb, cb = textureLod(B, uv, 0.).rgb;
-  vec3 bl = mix(ca, cb, t);
-  if (useFlow) {
-    vec2 f = texture(F, uv).xy;
-    vec3 wa = textureLod(A, uv - t*f, 0.).rgb, wb = textureLod(B, uv + (1.-t)*f, 0.).rgb;
-    // where the two warps disagree (occlusion, bad match) fall back to a plain cross-fade
-    o = vec4(mix(mix(wa, wb, t), bl, smoothstep(.12, .35, length(wa - wb))), 1);
-  } else o = vec4(bl, 1);
-}`;
-
-// ---------- AI interpolation (RIFE v4.26, MIT, run by onnxruntime-web on WebGPU or CPU) ----------
-// The fast model estimates motion at half resolution (RIFE's scale=0.5) and needs inputs padded to 128 instead of 64.
-const rifeCache = {};
-async function loadRife(fast, onStatus) {
-  const file = fast ? "rife426_fast.onnx" : "rife426.onnx";
-  if (rifeCache[file]) return rifeCache[file];
-  onStatus("AI 모델 불러오는 중… (처음 한 번 약 50MB, 이후에는 폰에 저장된 것을 사용)");
-  const ort = await import("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.bundle.min.mjs");
-  ort.env.wasm.numThreads = 0;   // auto: multi-threaded when the page is cross-origin isolated
-  const probe = gpuProbe || await probeGpu();
-  let session = null, backend = "GPU", why = probe.ok ? "" : probe.why;
-  if (probe.ok) {
-    try { session = await ort.InferenceSession.create(file, { executionProviders: ["webgpu"] }); }
-    catch (e) { session = null; why = "GPU에서 모델 실행 실패: " + (e?.message || e).toString().slice(0, 120); }
-  }
-  if (!session) { backend = cpuDesc() + (why ? ` — GPU 불가: ${why}` : ""); session = await ort.InferenceSession.create(file, { executionProviders: ["wasm"] }); }
-  return (rifeCache[file] = { ort, session, backend, pad: fast ? 128 : 64 });
-}
-
-function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen, onNote, ai }) {
+// ---------- enhancement (WebGL unsharp mask + mild contrast/saturation) ----------
+function makeEnhancer(srcW, srcH, outW, outH, amt) {
   const src = new OffscreenCanvas(srcW, srcH), sctx = src.getContext("2d");
   const cv = new OffscreenCanvas(outW, outH);
-  const gl = cv.getContext("webgl2", { premultipliedAlpha: false, preserveDrawingBuffer: true, antialias: false });
-  if (!gl) throw new Error("WebGL2를 사용할 수 없어 화질 개선·슬로우 모션을 적용할 수 없습니다.");
-  let mode = slow > 1 ? interp : "none";
-  if (mode === "flow" && !gl.getExtension("EXT_color_buffer_float")) { mode = "blend"; onNote?.("이 기기는 모션 보간을 지원하지 않아 블렌딩으로 처리했습니다"); }
-  const useFlow = mode === "flow";
-
-  const prog = (fs) => {
-    const sh = (type, s) => { const x = gl.createShader(type); gl.shaderSource(x, s); gl.compileShader(x); return x; };
-    const p = gl.createProgram();
-    gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
-    gl.bindAttribLocation(p, 0, "p"); gl.linkProgram(p);
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("셰이더 오류: " + gl.getProgramInfoLog(p));
-    const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
-    for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); }
-    return { p, u };
-  };
-  const P = { enh: prog(FS_ENH), out: prog(FS_OUT) };
-  if (useFlow) { P.match = prog(FS_MATCH); P.smooth = prog(FS_SMOOTH); }
-  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  const gl = cv.getContext("webgl2", { premultipliedAlpha: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error("WebGL2를 사용할 수 없어 화질 개선을 적용할 수 없습니다.");
+  const vs = `#version 300 es
+  in vec2 p; out vec2 uv;
+  void main(){ uv = vec2(p.x*.5+.5, .5-p.y*.5); gl_Position = vec4(p,0,1); }`;
+  const fs = `#version 300 es
+  precision highp float; in vec2 uv; out vec4 o;
+  uniform sampler2D t; uniform vec2 px; uniform float k;
+  void main(){
+    vec3 c = texture(t, uv).rgb;
+    vec3 b = c*4.0;
+    b += (texture(t, uv+vec2(px.x,0.)).rgb + texture(t, uv-vec2(px.x,0.)).rgb + texture(t, uv+vec2(0.,px.y)).rgb + texture(t, uv-vec2(0.,px.y)).rgb)*2.0;
+    b += texture(t, uv+px).rgb + texture(t, uv-px).rgb + texture(t, uv+vec2(px.x,-px.y)).rgb + texture(t, uv+vec2(-px.x,px.y)).rgb;
+    b /= 16.0;
+    vec3 s = c + (c-b)*k;
+    float l = dot(s, vec3(.299,.587,.114));
+    s = mix(vec3(l), s, 1.0 + .06*k);
+    s = (s-.5)*(1.0 + .04*k) + .5;
+    o = vec4(clamp(s,0.,1.), 1.);
+  }`;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const pr = gl.createProgram();
+  gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(pr); gl.useProgram(pr);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-
-  const mkTex = (w, h, fmt, levels, minF) => {
-    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
-    gl.texStorage2D(gl.TEXTURE_2D, levels, fmt, w, h);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minF);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return { t, fb, w, h };
-  };
-  const srcTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, srcTex);
+  const loc = gl.getAttribLocation(pr, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
   for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, p, v);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);   // keep every pass in GL's bottom-up orientation
-
-  const levels = useFlow ? Math.floor(Math.log2(Math.max(outW, outH))) + 1 : 1;
-  const frames = [0, 1].map(() => mkTex(outW, outH, gl.RGBA8, levels, useFlow ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR));
-  // flow pyramid: coarse level ~80 px on the long side (search +-6 texels = ~7% of the frame), refined two octaves up.
-  // Faster motion than that is not found; the occlusion check in FS_OUT then degrades those pixels to a cross-fade.
-  const lc = Math.max(2, Math.round(Math.log2(Math.max(outW, outH) / 80)));
-  const lvls = [lc, lc - 1, lc - 2];
-  const fsz = (l) => [Math.max(1, Math.ceil(outW / 2 ** l)), Math.max(1, Math.ceil(outH / 2 ** l))];
-  const flows = useFlow ? lvls.flatMap((l) => [0, 1].map(() => mkTex(...fsz(l), gl.RG16F, 1, gl.LINEAR))) : [];
-  const flowOut = flows[flows.length - 1];
-
-  const bind = (unit, tex) => { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex); };
-  const draw = (target, P_, set) => {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fb : null);
-    gl.viewport(0, 0, target ? target.w : outW, target ? target.h : outH);
-    gl.useProgram(P_.p); set(P_.u); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  };
-
-  function renderFrame(sample, f) {
-    sample.draw(sctx, 0, 0, srcW, srcH);
-    bind(0, srcTex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-    draw(f, P.enh, (u) => { gl.uniform1i(u.t, 0); gl.uniform2f(u.px, 1 / outW, 1 / outH); gl.uniform1f(u.k, enh); });
-    if (useFlow) { bind(0, f.t); gl.generateMipmap(gl.TEXTURE_2D); }
-  }
-  function computeFlow(a, b, t) {
-    const match = (dst, lod, R, init) => draw(dst, P.match, (u) => {
-      bind(0, a.t); bind(1, b.t); bind(2, init ? init.t : flowOut.t);   // never the render target: WebGL rejects feedback loops
-      gl.uniform1i(u.A, 0); gl.uniform1i(u.B, 1); gl.uniform1i(u.F0, 2);
-      gl.uniform1f(u.lod, lod); gl.uniform2f(u.st, 2 ** lod / outW, 2 ** lod / outH);
-      gl.uniform1i(u.R, R); gl.uniform1i(u.hasInit, init ? 1 : 0); gl.uniform1f(u.t, t);
-    });
-    const smooth = (dst, srcF) => draw(dst, P.smooth, (u) => { bind(0, srcF.t); gl.uniform1i(u.F, 0); gl.uniform2f(u.tx, 1 / srcF.w, 1 / srcF.h); });
-    let init = null;
-    lvls.forEach((l, i) => { match(flows[2 * i], l, i === 0 ? 6 : 2, init); smooth(flows[2 * i + 1], flows[2 * i]); init = flows[2 * i + 1]; });
-  }
-  function emit(a, b, t, flowOn, timestamp, duration) {
-    draw(null, P.out, (u) => {
-      bind(0, a.t); bind(1, b.t); bind(2, flowOn ? flowOut.t : a.t);
-      gl.uniform1i(u.A, 0); gl.uniform1i(u.B, 1); gl.uniform1i(u.F, 2);
-      gl.uniform1f(u.t, t); gl.uniform1i(u.useFlow, flowOn ? 1 : 0);
-    });
-    return new MB.VideoSample(cv, { timestamp, duration });
-  }
-
-  // RIFE wants CHW float input padded to a multiple of 64 (128 for the fast model); frames are read back from the GL textures (bottom-up rows)
-  const padTo = ai?.pad || 64;
-  const Hp = Math.ceil(outH / padTo) * padTo, Wp = Math.ceil(outW / padTo) * padTo, plane = Hp * Wp;
-  const rgba = new Uint8Array(outW * outH * 4);
-  const aiCanvas = mode === "ai" ? new OffscreenCanvas(outW, outH) : null;
-  const aiCtx = aiCanvas?.getContext("2d");
-  const aiImg = aiCtx?.createImageData(outW, outH);
-  const tensors = [null, null];
-  function toTensor(fr) {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fr.fb);
-    gl.readPixels(0, 0, outW, outH, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-    const d = new Float32Array(3 * plane);
-    for (let y = 0; y < Hp; y++) {
-      const sy = outH - 1 - Math.min(y, outH - 1);            // flip to top-down, replicate the bottom edge into padding
-      for (let x = 0; x < Wp; x++) {
-        const si = (sy * outW + Math.min(x, outW - 1)) * 4, di = y * Wp + x;
-        d[di] = rgba[si] / 255; d[plane + di] = rgba[si + 1] / 255; d[2 * plane + di] = rgba[si + 2] / 255;
-      }
-    }
-    return new ai.ort.Tensor("float32", d, [1, 3, Hp, Wp]);
-  }
-  async function aiEmit(a, b, t, timestamp, duration) {
-    const tStart = performance.now();
-    const r = await ai.session.run({ img0: a, img1: b, t: new ai.ort.Tensor("float32", new Float32Array([t]), [1, 1, 1, 1]) });
-    const o = r.out.data, px = aiImg.data;
-    for (let y = 0; y < outH; y++) for (let x = 0; x < outW; x++) {
-      const si = y * Wp + x, di = (y * outW + x) * 4;
-      px[di] = o[si] * 255; px[di + 1] = o[plane + si] * 255; px[di + 2] = o[2 * plane + si] * 255; px[di + 3] = 255;
-    }
-    r.out.dispose?.();
-    ai.stats.n++; ai.stats.ms += performance.now() - tStart;
-    aiCtx.putImageData(aiImg, 0, 0);
-    return new MB.VideoSample(aiCanvas, { timestamp, duration });
-  }
-
-  let cur = 0, t0 = null, prevTs = null;
-  if (mode === "ai") return async (sample) => {
-    const ts = sample.timestamp, dur = sample.duration || 1 / 30;
-    if (t0 === null) t0 = ts;
-    const ci = cur, f = frames[cur], g = frames[cur ^ 1]; cur ^= 1;
-    renderFrame(sample, f);
-    tensors[ci] = toTensor(f);
-    const T = (x) => t0 + (x - t0) * slow;
-    const out = [];
-    if (prevTs !== null) {
-      const dt = ts - prevTs;
-      out.push(emit(g, g, 0, false, T(prevTs), dt));
-      for (let k = 1; k < slow; k++) out.push(await aiEmit(tensors[ci ^ 1], tensors[ci], k / slow, T(prevTs) + k * dt, dt));
-    }
-    if (ts - t0 + dur >= spanLen - dur * 0.5) out.push(emit(f, f, 0, false, T(ts), dur * slow));
-    prevTs = ts;
-    return out.length ? out : null;
-  };
+  // sample neighbours at output-pixel spacing so 2x upscale sharpens the upscaled detail
+  gl.uniform2f(gl.getUniformLocation(pr, "px"), 1 / outW, 1 / outH);
+  gl.uniform1f(gl.getUniformLocation(pr, "k"), amt);
+  gl.viewport(0, 0, outW, outH);
   return (sample) => {
-    const ts = sample.timestamp, dur = sample.duration || 1 / 30;
-    if (t0 === null) t0 = ts;
-    const f = frames[cur], g = frames[cur ^ 1]; cur ^= 1;
-    renderFrame(sample, f);
-    const T = (x) => t0 + (x - t0) * slow;          // stretched output time
-    if (mode === "none") return emit(f, f, 0, false, ts, dur);
-    if (mode === "dup") return emit(f, f, 0, false, T(ts), dur * slow);
-    const out = [];
-    if (prevTs !== null) {
-      const dt = ts - prevTs;
-      for (let k = 0; k < slow; k++) {
-        if (useFlow && k > 0) computeFlow(g, f, k / slow);
-        out.push(emit(g, f, k / slow, useFlow && k > 0, T(prevTs) + k * dt, dt));
-      }
-    }
-    // the last frame has no successor: hold it for its stretched duration
-    if (ts - t0 + dur >= spanLen - dur * 0.5) out.push(emit(f, f, 0, false, T(ts), dur * slow));
-    prevTs = ts;
-    return out.length ? out : null;
+    sample.draw(sctx, 0, 0, srcW, srcH);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return new MB.VideoSample(cv, { timestamp: sample.timestamp, duration: sample.duration });
   };
 }
 
@@ -762,22 +477,18 @@ $("go").onclick = async () => {
       allowTransformationMetadata: false,
     };
     if (crop) video.crop = crop;
-    const notes = [];
-    if (S.enh > 0 || S.up2 || S.slow > 1) {
-      const ai = S.slow > 1 && S.interp === "ai" ? await loadRife(S.aiFast, setStatus) : null;
-      if (ai) ai.stats = { n: 0, ms: 0 };
-      video.process = makeFrameProcessor({ ai, srcW: baseW, srcH: baseH, outW, outH, enh: S.enh, slow: S.slow, interp: S.interp,
-        spanLen: S.tout - S.tin, onNote: (m) => notes.push(m) });
+    if (S.enh > 0 || S.up2) {
+      video.process = makeEnhancer(baseW, baseH, outW, outH, S.enh);
       video.processedWidth = outW; video.processedHeight = outH;
     }
     const conv = await MB.Conversion.init({
       input, output, video,
-      audio: S.slow > 1 || !$("keepAudio").checked ? { discard: true } : {},
+      audio: S.keepAudio === false || !$("keepAudio").checked ? { discard: true } : {},
       trim: { start: S.tin, end: S.tout },
       showWarnings: false,
     });
     if (!conv.isValid) throw new Error("변환할 수 없는 파일입니다: " + conv.discardedTracks.map((d) => d.reason).join(", "));
-    const lostAudio = S.slow === 1 && $("keepAudio").checked && conv.discardedTracks.some((d) => d.track.type === "audio");
+    const lostAudio = conv.discardedTracks.some((d) => d.track.type === "audio");
     S.conv = conv;
     const t0 = performance.now();
     conv.onProgress = (p) => {
@@ -787,17 +498,15 @@ $("go").onclick = async () => {
       setStatus(`인코딩 ${(p * 100).toFixed(0)}%` + (eta != null ? ` · 남은 시간 약 ${Math.ceil(eta)}초` : ""));
     };
     await conv.execute();
-    const aiUsed = video.process && S.slow > 1 && S.interp === "ai" ? rifeCache[S.aiFast ? "rife426_fast.onnx" : "rife426.onnx"] : null;
-    if (aiUsed) notes.push(`AI 계산: ${aiUsed.backend}, 프레임당 ${Math.round(aiUsed.stats.ms / Math.max(1, aiUsed.stats.n))}ms`);
     S.outBlob = new Blob([output.target.buffer], { type: "video/mp4" });
     const base = S.file.name.replace(/\.[^.]+$/, "");
-    S.outName = `${base}_${fmt(S.tin).replace(/[:.]/g, "")}-${fmt(S.tout).replace(/[:.]/g, "")}${crop ? "_roi" : ""}${S.enh || S.up2 ? "_enh" : ""}${S.slow > 1 ? "_slow" + S.slow + "x" : ""}.mp4`;
+    S.outName = `${base}_${fmt(S.tin).replace(/[:.]/g, "")}-${fmt(S.tout).replace(/[:.]/g, "")}${crop ? "_roi" : ""}${S.enh || S.up2 ? "_enh" : ""}.mp4`;
     if (S.outUrl) URL.revokeObjectURL(S.outUrl);
     S.outUrl = URL.createObjectURL(S.outBlob);
     $("outVid").src = S.outUrl;
     $("dl").href = S.outUrl; $("dl").download = S.outName;
     $("result").hidden = false;
-    setStatus(`완료 · ${outW}×${outH} · ${(S.outBlob.size / 1048576).toFixed(1)}MB · ${((performance.now() - t0) / 1000).toFixed(1)}초 걸림` + (lostAudio ? " · 이 기기에서 소리를 인코딩할 수 없어 소리 없이 저장됩니다" : "") + notes.map((n) => " · " + n).join(""), "ok");
+    setStatus(`완료 · ${outW}×${outH} · ${(S.outBlob.size / 1048576).toFixed(1)}MB · ${((performance.now() - t0) / 1000).toFixed(1)}초 걸림` + (lostAudio ? " · 이 기기에서 소리를 인코딩할 수 없어 소리 없이 저장됩니다" : ""), "ok");
   } catch (e) {
     if (e && e.name === "ConversionCanceledError") setStatus("취소했습니다.");
     else setStatus("실패: " + (e?.message || e), "err");
@@ -823,5 +532,3 @@ $("save").onclick = async () => {
   }
 };
 </script>
-</body>
-</html>
