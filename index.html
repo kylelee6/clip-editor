@@ -4,10 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#121417">
+<!-- cross-origin isolation (needed for multi-threaded AI on CPU); GitHub Pages can't set the headers, so a service worker adds them -->
+<script src="coi-serviceworker.js"></script>
 <style>[hidden]{display:none!important} body{margin:0} *{box-sizing:border-box}</style>
 <title>In·Out 클립 편집기</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" crossorigin="anonymous" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
 /* Layout: one-column editing bay — monitor on top, timeline strip, then export rack. Dark suite look, tape-yellow In/Out marks. */
 :root {
@@ -227,7 +229,9 @@ section.card { background: var(--panel); border: 1px solid var(--line); border-r
             <button data-i="flow" aria-pressed="true">모션 보간</button>
             <button data-i="ai" aria-pressed="false">AI 보간</button>
           </div>
+          <label class="switch" id="aiFastRow" hidden><input type="checkbox" id="aiFast" checked> AI 고속 모드 (움직임을 절반 해상도로 계산, 약 3배 빠름)</label>
           <p class="hint" id="slowHint" hidden></p>
+          <p class="hint" id="aiDev" hidden></p>
         </div>
 
         <label class="switch"><input type="checkbox" id="keepAudio" checked> 소리 포함</label>
@@ -261,7 +265,7 @@ const S = {
   file: null, dur: 0, fps: 30, W: 0, H: 0,
   tin: 0, tout: 0,
   ar: "off", roi: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 },  // normalized to display frame
-  q: "vhigh", enh: 0, up2: false, slow: 1, interp: "flow",
+  q: "vhigh", enh: 0, up2: false, slow: 1, interp: "flow", aiFast: true,
   conv: null, outBlob: null, outName: "", outUrl: null, srcUrl: null, loop: false,
 };
 
@@ -436,9 +440,25 @@ segPick("enhSeg", "e", (v) => S.enh = parseFloat(v));
 $("up2").onchange = (e) => S.up2 = e.target.checked;
 segPick("spdSeg", "s", (v) => { S.slow = parseInt(v); vid.playbackRate = 1 / S.slow; renderSlow(); });
 segPick("itpSeg", "i", (v) => { S.interp = v; renderSlow(); });
+$("aiFast").onchange = (e) => { S.aiFast = e.target.checked; renderSlow(); };
+// Which processor will run the AI, and if not the GPU, why not
+let gpuProbe = null;
+async function probeGpu() {
+  if (!navigator.gpu) return { ok: false, why: "이 브라우저에서 WebGPU를 쓸 수 없음 (Android 12+, 크롬 121+ 필요)" };
+  try {
+    const ad = await navigator.gpu.requestAdapter();
+    if (!ad) return { ok: false, why: "크롬이 이 기기의 GPU를 WebGPU용으로 허용하지 않음 (드라이버 차단 목록)" };
+    const info = ad.info || {};
+    return { ok: true, name: [info.vendor, info.architecture].filter(Boolean).join(" ") || "GPU" };
+  } catch (e) { return { ok: false, why: "GPU 확인 중 오류: " + e.message }; }
+}
+probeGpu().then((r) => { gpuProbe = r; renderSlow(); });
+const cpuDesc = () => `CPU ${self.crossOriginIsolated ? "멀티코어" : "단일 코어"} (${navigator.hardwareConcurrency || "?"}코어 기기)`;
 function renderSlow() {
   const on = S.slow > 1;
   $("itpSeg").hidden = $("slowHint").hidden = !on;
+  $("aiFastRow").hidden = $("aiDev").hidden = !(on && S.interp === "ai");
+  if (gpuProbe) $("aiDev").textContent = gpuProbe.ok ? `AI 계산 장치: GPU (${gpuProbe.name})` : `AI 계산 장치: ${cpuDesc()} · GPU 불가 이유: ${gpuProbe.why}`;
   $("keepAudio").disabled = on;
   if (!on) return;
   const outFps = S.interp === "dup" ? S.fps / S.slow : S.fps;
@@ -519,17 +539,22 @@ void main(){
 }`;
 
 // ---------- AI interpolation (RIFE v4.26, MIT, run by onnxruntime-web on WebGPU or CPU) ----------
-let rife = null;   // { ort, session, backend }
-async function loadRife(onStatus) {
-  if (rife) return rife;
+// The fast model estimates motion at half resolution (RIFE's scale=0.5) and needs inputs padded to 128 instead of 64.
+const rifeCache = {};
+async function loadRife(fast, onStatus) {
+  const file = fast ? "rife426_fast.onnx" : "rife426.onnx";
+  if (rifeCache[file]) return rifeCache[file];
   onStatus("AI 모델 불러오는 중… (처음 한 번 약 23MB)");
   const ort = await import("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.bundle.min.mjs");
-  let session = null, backend = "GPU";
-  if (navigator.gpu) {
-    try { session = await ort.InferenceSession.create("rife426.onnx", { executionProviders: ["webgpu"] }); } catch { session = null; }
+  ort.env.wasm.numThreads = 0;   // auto: multi-threaded when the page is cross-origin isolated
+  const probe = gpuProbe || await probeGpu();
+  let session = null, backend = "GPU", why = probe.ok ? "" : probe.why;
+  if (probe.ok) {
+    try { session = await ort.InferenceSession.create(file, { executionProviders: ["webgpu"] }); }
+    catch (e) { session = null; why = "GPU에서 모델 실행 실패: " + (e?.message || e).toString().slice(0, 120); }
   }
-  if (!session) { backend = "CPU"; session = await ort.InferenceSession.create("rife426.onnx", { executionProviders: ["wasm"] }); }
-  return (rife = { ort, session, backend });
+  if (!session) { backend = cpuDesc() + (why ? ` — GPU 불가: ${why}` : ""); session = await ort.InferenceSession.create(file, { executionProviders: ["wasm"] }); }
+  return (rifeCache[file] = { ort, session, backend, pad: fast ? 128 : 64 });
 }
 
 function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen, onNote, ai }) {
@@ -616,8 +641,9 @@ function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen
     return new MB.VideoSample(cv, { timestamp, duration });
   }
 
-  // RIFE wants CHW float input padded to a multiple of 64; frames are read back from the GL textures (bottom-up rows)
-  const Hp = Math.ceil(outH / 64) * 64, Wp = Math.ceil(outW / 64) * 64, plane = Hp * Wp;
+  // RIFE wants CHW float input padded to a multiple of 64 (128 for the fast model); frames are read back from the GL textures (bottom-up rows)
+  const padTo = ai?.pad || 64;
+  const Hp = Math.ceil(outH / padTo) * padTo, Wp = Math.ceil(outW / padTo) * padTo, plane = Hp * Wp;
   const rgba = new Uint8Array(outW * outH * 4);
   const aiCanvas = mode === "ai" ? new OffscreenCanvas(outW, outH) : null;
   const aiCtx = aiCanvas?.getContext("2d");
@@ -637,6 +663,7 @@ function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen
     return new ai.ort.Tensor("float32", d, [1, 3, Hp, Wp]);
   }
   async function aiEmit(a, b, t, timestamp, duration) {
+    const tStart = performance.now();
     const r = await ai.session.run({ img0: a, img1: b, t: new ai.ort.Tensor("float32", new Float32Array([t]), [1, 1, 1, 1]) });
     const o = r.out.data, px = aiImg.data;
     for (let y = 0; y < outH; y++) for (let x = 0; x < outW; x++) {
@@ -644,6 +671,7 @@ function makeFrameProcessor({ srcW, srcH, outW, outH, enh, slow, interp, spanLen
       px[di] = o[si] * 255; px[di + 1] = o[plane + si] * 255; px[di + 2] = o[2 * plane + si] * 255; px[di + 3] = 255;
     }
     r.out.dispose?.();
+    ai.stats.n++; ai.stats.ms += performance.now() - tStart;
     aiCtx.putImageData(aiImg, 0, 0);
     return new MB.VideoSample(aiCanvas, { timestamp, duration });
   }
@@ -713,8 +741,8 @@ $("go").onclick = async () => {
     if (crop) video.crop = crop;
     const notes = [];
     if (S.enh > 0 || S.up2 || S.slow > 1) {
-      const ai = S.slow > 1 && S.interp === "ai" ? await loadRife(setStatus) : null;
-      if (ai) notes.push(`AI 계산: ${ai.backend}`);
+      const ai = S.slow > 1 && S.interp === "ai" ? await loadRife(S.aiFast, setStatus) : null;
+      if (ai) ai.stats = { n: 0, ms: 0 };
       video.process = makeFrameProcessor({ ai, srcW: baseW, srcH: baseH, outW, outH, enh: S.enh, slow: S.slow, interp: S.interp,
         spanLen: S.tout - S.tin, onNote: (m) => notes.push(m) });
       video.processedWidth = outW; video.processedHeight = outH;
@@ -736,6 +764,8 @@ $("go").onclick = async () => {
       setStatus(`인코딩 ${(p * 100).toFixed(0)}%` + (eta != null ? ` · 남은 시간 약 ${Math.ceil(eta)}초` : ""));
     };
     await conv.execute();
+    const aiUsed = video.process && S.slow > 1 && S.interp === "ai" ? rifeCache[S.aiFast ? "rife426_fast.onnx" : "rife426.onnx"] : null;
+    if (aiUsed) notes.push(`AI 계산: ${aiUsed.backend}, 프레임당 ${Math.round(aiUsed.stats.ms / Math.max(1, aiUsed.stats.n))}ms`);
     S.outBlob = new Blob([output.target.buffer], { type: "video/mp4" });
     const base = S.file.name.replace(/\.[^.]+$/, "");
     S.outName = `${base}_${fmt(S.tin).replace(/[:.]/g, "")}-${fmt(S.tout).replace(/[:.]/g, "")}${crop ? "_roi" : ""}${S.enh || S.up2 ? "_enh" : ""}${S.slow > 1 ? "_slow" + S.slow + "x" : ""}.mp4`;
